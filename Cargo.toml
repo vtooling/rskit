@@ -1,11 +1,11 @@
 [package]
 name = "rskit"
-version = "0.0.36"
+version = "0.0.37"
 edition = "2024"
 license = "MIT"
 description = "rust kit"
 documentation = "https://docs.rs/rskit"
-repository = "https://gitee.com/itooling/rskit"
+repository = "https://github.com/vtooling/rskit"
 
 [dependencies]
 aes = "0.8.4"
