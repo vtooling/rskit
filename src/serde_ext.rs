@@ -80,6 +80,38 @@ fn value_to_query(v: &serde_json::Value) -> Option<String> {
     }
 }
 
+// --- Optional format helpers ------------------------------------------------
+
+/// Serialize to a YAML string. Requires feature `yaml`.
+#[cfg(feature = "yaml")]
+pub fn to_yaml<T: Serialize>(value: &T) -> Result<String> {
+    Ok(serde_yaml::to_string(value)?)
+}
+
+/// Deserialize from a YAML string. Requires feature `yaml`.
+#[cfg(feature = "yaml")]
+pub fn from_yaml<T: for<'de> Deserialize<'de>>(s: &str) -> Result<T> {
+    Ok(serde_yaml::from_str(s)?)
+}
+
+/// Serialize a slice of records to a CSV string. Requires feature `csv`.
+#[cfg(feature = "csv")]
+pub fn to_csv<T: Serialize>(records: &[T]) -> Result<String> {
+    let mut w = csv::Writer::from_writer(Vec::new());
+    for r in records {
+        w.serialize(r)?;
+    }
+    let bytes = w.into_inner()?;
+    Ok(String::from_utf8(bytes)?)
+}
+
+/// Deserialize CSV text into a `Vec<T>`. Requires feature `csv`.
+#[cfg(feature = "csv")]
+pub fn from_csv<T: for<'de> Deserialize<'de>>(s: &str) -> Result<Vec<T>> {
+    let mut rdr = csv::Reader::from_reader(s.as_bytes());
+    Ok(rdr.deserialize().collect::<Result<_, _>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +198,47 @@ mod tests {
     fn flatten_query_string() {
         let v = serde_json::json!("hi");
         assert_eq!(flatten_query(&v), Some("hi".to_string()));
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn yaml_roundtrip() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct P {
+            a: i32,
+            b: String,
+        }
+        let p = P {
+            a: 1,
+            b: "hi".into(),
+        };
+        let y = to_yaml(&p).unwrap();
+        assert!(y.contains("a: 1"));
+        let back: P = from_yaml(&y).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[cfg(feature = "csv")]
+    #[test]
+    fn csv_roundtrip() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Row {
+            id: i32,
+            name: String,
+        }
+        let rows = vec![
+            Row {
+                id: 1,
+                name: "alpha".into(),
+            },
+            Row {
+                id: 2,
+                name: "beta".into(),
+            },
+        ];
+        let s = to_csv(&rows).unwrap();
+        assert!(s.contains("alpha"));
+        let back: Vec<Row> = from_csv(&s).unwrap();
+        assert_eq!(back, rows);
     }
 }

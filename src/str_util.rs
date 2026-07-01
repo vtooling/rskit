@@ -163,6 +163,109 @@ pub fn truncate(s: &str, max: usize, suffix: &str) -> String {
     format!("{head}{suffix}")
 }
 
+/// Mask the interior of a string, keeping `keep_head` leading and `keep_tail`
+/// trailing characters. Strings shorter than `keep_head + keep_tail` are fully
+/// masked.
+fn mask_inner(s: &str, keep_head: usize, keep_tail: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    if len <= keep_head + keep_tail {
+        return "*".repeat(len);
+    }
+    let head: String = chars[..keep_head].iter().collect();
+    let tail: String = chars[len - keep_tail..].iter().collect();
+    let masked = "*".repeat(len - keep_head - keep_tail);
+    format!("{head}{masked}{tail}")
+}
+
+/// Mask an email: keep the first char of the local part, mask the rest; keep
+/// the domain. `"alice@example.com"` -> `"a***@example.com"`.
+pub fn mask_email(s: &str) -> String {
+    match s.split_once('@') {
+        Some((local, domain)) => format!("{}@{}", mask_inner(local, 1, 0), domain),
+        None => mask_inner(s, 1, 0),
+    }
+}
+
+/// Mask a phone number: keep the first 3 and last 4 digits.
+/// `"13812345678"` -> `"138****5678"`.
+pub fn mask_phone(s: &str) -> String {
+    mask_inner(s, 3, 4)
+}
+
+/// Mask a card/account number: keep the first 4 and last 4 digits.
+/// `"4242424242424242"` -> `"4242********4242"`.
+pub fn mask_card(s: &str) -> String {
+    mask_inner(s, 4, 4)
+}
+
+/// Levenshtein edit distance between two strings.
+pub fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr: Vec<usize> = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+/// Render a `{key}` template against a variable map. Unknown keys are left
+/// verbatim (including braces).
+pub fn render_template(tpl: &str, vars: &std::collections::HashMap<&str, String>) -> String {
+    let chars: Vec<char> = tpl.chars().collect();
+    let mut out = String::with_capacity(tpl.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '{'
+            && let Some(offset) = chars[i + 1..].iter().position(|c| *c == '}')
+        {
+            let end = i + 1 + offset;
+            let key: String = chars[i + 1..end].iter().collect();
+            match vars.get(key.as_str()) {
+                Some(v) => out.push_str(v),
+                None => out.push_str(&format!("{{{key}}}")),
+            }
+            i = end + 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Return `singular` for a count of 1, otherwise `plural`.
+pub fn pluralize(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        singular.to_string()
+    } else {
+        plural.to_string()
+    }
+}
+
+/// Like [`pluralize`] but auto-appends `"s"` for the plural form.
+pub fn pluralize_auto(count: usize, word: &str) -> String {
+    if count == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +331,56 @@ mod tests {
         assert_eq!(truncate("hello world", 11, "..."), "hello world");
         assert_eq!(truncate("hello world", 8, "..."), "hello...");
         assert_eq!(truncate("abcdef", 3, ""), "abc");
+    }
+
+    #[test]
+    fn mask_helpers() {
+        // "alice" (5 chars) keeps 1 leading => 4 stars
+        assert_eq!(mask_email("alice@example.com"), "a****@example.com");
+        assert_eq!(mask_phone("13812345678"), "138****5678");
+        assert_eq!(mask_card("4242424242424242"), "4242********4242");
+    }
+
+    #[test]
+    fn mask_short_input_fully_masked() {
+        assert_eq!(mask_phone("123"), "***");
+        assert_eq!(mask_email("x@y.co"), "*@y.co");
+    }
+
+    #[test]
+    fn levenshtein_cases() {
+        assert_eq!(levenshtein("", ""), 0);
+        assert_eq!(levenshtein("abc", ""), 3);
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("flaw", "lawn"), 2);
+        assert_eq!(levenshtein("same", "same"), 0);
+    }
+
+    #[test]
+    fn render_template_substitutes() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("name", "rskit".to_string());
+        vars.insert("ver", "0.1".to_string());
+        assert_eq!(
+            render_template("Hello {name} v{ver}", &vars),
+            "Hello rskit v0.1"
+        );
+    }
+
+    #[test]
+    fn render_template_unknown_kept() {
+        let vars = std::collections::HashMap::new();
+        assert_eq!(render_template("a {missing} b", &vars), "a {missing} b");
+        assert_eq!(render_template("no vars here", &vars), "no vars here");
+        assert_eq!(render_template("unclosed {key", &vars), "unclosed {key");
+    }
+
+    #[test]
+    fn pluralize_cases() {
+        assert_eq!(pluralize(1, "item", "items"), "item");
+        assert_eq!(pluralize(0, "item", "items"), "items");
+        assert_eq!(pluralize(5, "item", "items"), "items");
+        assert_eq!(pluralize_auto(1, "user"), "user");
+        assert_eq!(pluralize_auto(2, "user"), "users");
     }
 }
