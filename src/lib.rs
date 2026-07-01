@@ -1,142 +1,59 @@
-pub mod base;
+//! # rskit
+//!
+//! A collection of practical Rust utilities: encoding, hashing, crypto, serde
+//! helpers, cache, scheduling, IDs, retry, validation, time/date, filesystem,
+//! logging, config loading, and optional HTTP / DB / Redis / compression
+//! integrations.
+//!
+//! ## Feature flags
+//!
+//! - `full` (default) — enables every optional integration below.
+//! - `http` — `reqwest`-based HTTP helpers.
+//! - `db` — `sqlx` SQLite/Postgres pool helpers.
+//! - `redis` — async Redis helpers.
+//! - `sys` — process introspection via `sysinfo`.
+//! - `id` — UUID v4/v7, NanoID, ULID, Snowflake.
+//! - `pass` — Argon2/bcrypt password hashing.
+//! - `jwt` — HS256 JSON Web Tokens.
+//! - `totp` — HOTP/TOTP one-time passwords.
+//! - `compress` — gzip/zstd compression.
 
+pub mod cache;
 pub mod crypto;
+pub mod datetime;
+pub mod encode;
+pub mod fs;
+pub mod hash;
+pub mod log;
+pub mod num;
+pub mod retry;
+pub mod serde_ext;
+pub mod str_util;
+pub mod timer;
+pub mod valid;
 
-pub use base::*;
+pub mod config;
+pub mod sys;
 
-use fast_log::{
-    Config, Logger,
-    consts::LogSize,
-    error::LogError,
-    plugin::{
-        file_split::{KeepType, Rolling, RollingType},
-        packer::LogPacker,
-    },
-};
-use log::LevelFilter;
-use serde::{Deserialize, Serialize};
+#[cfg(feature = "http")]
+pub mod http;
 
-pub use log;
+#[cfg(feature = "db")]
+pub mod db;
 
-#[cfg(debug_assertions)]
-pub const RUST_LOG: LevelFilter = LevelFilter::Debug;
-#[cfg(not(debug_assertions))]
-pub const RUST_LOG: LevelFilter = LevelFilter::Info;
+#[cfg(feature = "redis")]
+pub mod redis;
 
-pub struct Log {
-    pub chan: Option<usize>,
-    pub path: String,
-    pub roll: Rolling,
-    pub keep: KeepType,
-    pub packer: LogPacker,
-    pub level: LevelFilter,
-}
+#[cfg(feature = "id")]
+pub mod id;
 
-impl Log {
-    pub fn new() -> Self {
-        let dir = match std::env::current_dir() {
-            Ok(p) => p.to_str().expect("current dir error").to_string(),
-            Err(_) => "./".to_string(),
-        };
-        Log {
-            chan: Some(100000),
-            path: format!("{}/log/app.log", dir),
-            roll: Rolling::new(RollingType::BySize(LogSize::MB(100))),
-            keep: KeepType::KeepNum(10),
-            packer: LogPacker {},
-            level: RUST_LOG,
-        }
-    }
+#[cfg(feature = "compress")]
+pub mod compress;
 
-    pub fn init(&self) -> Result<&'static Logger, LogError> {
-        fast_log::init(
-            Config::new()
-                .level(self.level)
-                .chan_len(self.chan)
-                .console(),
-        )
-    }
+#[cfg(feature = "sys")]
+pub use sys::is_running_current;
 
-    pub fn init_file(&self) -> Result<&'static Logger, LogError> {
-        fast_log::init(
-            Config::new()
-                .level(self.level)
-                .chan_len(self.chan)
-                .file(&self.path)
-                .console(),
-        )
-    }
+pub use log::Log;
 
-    pub fn init_split(self) -> Result<&'static Logger, LogError> {
-        fast_log::init(
-            fast_log::Config::new()
-                .level(self.level)
-                .chan_len(self.chan)
-                .file_split(&self.path, self.roll, self.keep, self.packer)
-                .console(),
-        )
-    }
-}
-
-pub struct Configs<T: Serialize + Deserialize<'static>> {
-    config: Option<T>,
-}
-
-impl<T: Serialize + Deserialize<'static>> Configs<T> {
-    pub fn new() -> Self {
-        Configs { config: None }
-    }
-    pub fn init(&mut self, name: Option<String>) -> Option<&T> {
-        match config::Config::builder()
-            .add_source(
-                config::File::with_name(&format!("{}.toml", name.unwrap_or("app".to_string())))
-                    .required(false),
-            )
-            .build()
-        {
-            Ok(cfg) => match cfg.try_deserialize::<T>() {
-                Ok(s) => {
-                    self.config = Some(s);
-                    return self.config.as_ref();
-                }
-                Err(e) => {
-                    log::error!("deserialize config error: {:?}", e);
-                    None
-                }
-            },
-            Err(e) => {
-                log::error!("init config error: {:?}", e);
-                None
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Debug, Serialize, Deserialize, Default)]
-    pub struct Settings {
-        app: App,
-    }
-    #[derive(Debug, Serialize, Deserialize, Default)]
-    struct App {
-        version: String,
-    }
-
-    #[test]
-    fn test_log() {
-        use std::{thread, time::Duration};
-        Log::new().init_file().unwrap();
-        log::info!("init log ...");
-        thread::sleep(Duration::from_secs(1));
-    }
-
-    #[test]
-    fn test_config() {
-        let mut config = Configs::<Settings>::new();
-        let settings = config.init(None).unwrap();
-        println!("version: {}", settings.app.version);
-    }
-}
+// Convenience re-exports.
+pub use config::{App, Configs, Settings};
