@@ -1,9 +1,10 @@
 # rskit
 
 A collection of practical Rust utilities: encoding, hashing, crypto (incl. JWT,
-TOTP, password hashing), serde helpers, an in-memory cache, scheduling, IDs,
-retry, validation, time/date, filesystem, logging, config loading, and optional
-HTTP / DB / Redis / compression integrations.
+TOTP, ECDSA, password hashing), serde helpers, cache (incl. LRU), scheduling,
+IDs, rate limiting, circuit breaking, stats, validation, time/date, filesystem,
+logging, config loading, and optional HTTP / DB / Redis / compression / host
+integrations.
 
 ## Features
 
@@ -11,11 +12,17 @@ HTTP / DB / Redis / compression integrations.
 | --------------- | ---------------------------------------------------- | ---------- |
 | `encode`        | base58 / base64 / hex / url encode & decode          | always     |
 | `hash`          | sha256 / sha512 / md5                                | always     |
-| `str_util`      | case conversion, slugify, random strings             | always     |
+| `str_util`      | case conversion, slugify, masking, levenshtein, template, random strings | always |
 | `datetime`      | duration parse/humanize, timestamps, "time ago"      | always     |
-| `valid`         | email / url / ip / credit-card validators            | always     |
+| `valid`         | email / url / ip / credit-card / hex validators      | always     |
 | `fs`            | read/write/append/atomic_write/ensure_dir            | always     |
 | `retry`         | retry with exponential backoff (sync + async)        | always     |
+| `rate_limit`    | token bucket & leaky bucket rate limiters            | always     |
+| `circuit`       | circuit breaker (Closed/Open/HalfOpen)               | always     |
+| `throttle`      | throttle gate & debounce                             | always     |
+| `stats`         | min/max/mean/median/percentile/stddev                | always     |
+| `lru`           | thread-safe LRU cache                                | always     |
+| `envutil`       | typed environment variables                          | always     |
 | `serde_ext`     | json/bin helpers, datetime serde, query flattener    | always     |
 | `cache`         | thread-safe in-memory key/value cache                | always     |
 | `num`           | big-integer / byte conversions                       | always     |
@@ -24,12 +31,19 @@ HTTP / DB / Redis / compression integrations.
 | `log`           | `fast_log` wrapper                                   | always     |
 | `crypto`        | AES (CBC/GCM), RSA, Ed25519, ECDH                    | always     |
 | `crypto::hmac`  | HMAC-SHA256 / SHA512                                 | always     |
+| `crypto::kdf`   | HKDF-SHA256, PBKDF2-SHA256                           | always     |
+| `crypto::ct`    | constant-time comparison                             | always     |
 | `sys`           | process info, raw pointer / Windows helpers          | partial    |
 | `id`            | UUID v4/v7, NanoID, ULID, Snowflake                  | `id`       |
 | `crypto::pass`  | Argon2 + bcrypt password hashing                     | `pass`     |
 | `crypto::jwt`   | HS256 JSON Web Tokens                                | `jwt`      |
 | `crypto::totp`  | HOTP / TOTP one-time passwords                       | `totp`     |
+| `crypto::ecdsa` | ECDSA sign/verify (P-256 / secp256k1)                | `ecdsa`    |
 | `compress`      | gzip / zstd compression                              | `compress` |
+| `decimal`       | decimal / money via `rust_decimal`                   | `decimal`  |
+| `host`          | hostname and local IP addresses                      | `host`     |
+| `serde_ext` +yaml| `to_yaml` / `from_yaml`                             | `yaml`     |
+| `serde_ext` +csv | `to_csv` / `from_csv`                               | `csv`      |
 | `http`          | `reqwest`-based HTTP client                          | `http`     |
 | `db`            | `sqlx` SQLite/Postgres pool builders                 | `db`       |
 | `redis`         | async Redis helpers                                  | `redis`    |
@@ -207,6 +221,8 @@ use std::time::Duration;
 
 assert_eq!(str_util::to_snake_case("HTTPServer"), "http_server");
 assert_eq!(str_util::slugify("Hello, World!"), "hello-world");
+assert_eq!(str_util::mask_email("alice@example.com"), "a****@example.com");
+assert_eq!(str_util::levenshtein("kitten", "sitting"), 3);
 
 assert_eq!(datetime::parse_duration("1h30m").unwrap(), Duration::from_secs(5400));
 
@@ -214,6 +230,55 @@ assert!(valid::is_email("a@b.com"));
 assert!(!valid::is_email("bad"));
 
 let n = Retry::new().max_attempts(5).run_sync(|| Ok::<_, anyhow::Error>(())).unwrap();
+```
+
+### Rate limiting, circuit breaker, LRU
+
+```rust
+use std::time::Duration;
+use rskit::{rate_limit::TokenBucket, circuit::CircuitBreaker, lru::LruCache};
+
+let tb = TokenBucket::new(10, 5.0);      // capacity 10, refill 5/s
+assert!(tb.try_acquire(1));
+
+let cb = CircuitBreaker::new(5, Duration::from_secs(30)); // open after 5 failures
+let _: anyhow::Result<()> = cb.call_sync(|| Ok(()));
+
+let lru: LruCache<&str, i32> = LruCache::new(100);
+lru.put("k", 1);
+assert_eq!(lru.get(&"k"), Some(1));
+```
+
+### Stats, KDF, ECDSA, constant-time compare
+
+```rust
+use rskit::{stats, crypto::{kdf, ecdsa, ct}};
+
+assert_eq!(stats::mean(&[1.0, 2.0, 3.0]), Some(2.0));
+assert_eq!(stats::percentile(&[1.0, 2.0, 3.0, 4.0], 50.0), Some(2.5));
+
+let okm = kdf::hkdf_sha256(b"salt", b"ikm", b"info", 32);
+let pw_key = kdf::pbkdf2_sha256(b"password", b"nacl", 100_000, 32);
+
+let (sk, pk) = ecdsa::generate_keypair(ecdsa::Curve::P256);
+let sig = ecdsa::sign(ecdsa::Curve::P256, &sk, b"doc").unwrap();
+assert!(ecdsa::verify(ecdsa::Curve::P256, &pk, b"doc", &sig).unwrap());
+assert!(ct::ct_eq(&sig, &sig));
+```
+
+### Decimal, YAML/CSV, host (features `decimal` / `yaml` / `csv` / `host`)
+
+```rust
+use rskit::{decimal, serde_ext, host};
+
+let price = decimal::parse("19.99").unwrap();
+assert_eq!((price + decimal::parse("0.01").unwrap()).to_string(), "20.00");
+
+let yaml = serde_ext::to_yaml(&[1, 2, 3]).unwrap();    // feature "yaml"
+let csv  = serde_ext::to_csv(&[("a", 1)]).unwrap();    // feature "csv"
+
+println!("host: {}", host::hostname());                // feature "host"
+println!("ip: {:?}", host::local_ip().unwrap());
 ```
 
 ## License
